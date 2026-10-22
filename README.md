@@ -56,6 +56,14 @@ The M0 packages are self-contained (AppKit/SwiftUI/CryptoKit only), so they
 build under Command Line Tools or a full Xcode install; the scripts auto-detect
 the macOS SDK.
 
+The runnable app now includes:
+
+- a **no-phone onboarding flow** (display name only → on-device ephemeral identity)
+- a **Telegram-like UI** — search, gradient avatars, unread badges, read ticks,
+  grouped date separators, and the teal nav/bubble palette
+- a **Settings → Rotate identity / Emergency wipe** control wired to an
+  ephemeral key that is regenerated on demand
+
 With a full Xcode installation, the SwiftPM targets also build the standard way:
 
 ```sh

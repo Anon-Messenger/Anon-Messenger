@@ -33,7 +33,7 @@ local.seedIncoming(text: "Nova is in range, offline mesh ready.", from: "anon-re
 local.seedIncoming(text: "Relay hop established; reach is ~3 nodes.", from: "anon-remote-2")
 
 // --- Launch the app ---------------------------------------------------------
-let app = AnonApp(local: local)
+let app = AppRoot(local: local)
 let window = NSWindow(
     contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
     styleMask: [.titled, .closable, .miniaturizable, .resizable],

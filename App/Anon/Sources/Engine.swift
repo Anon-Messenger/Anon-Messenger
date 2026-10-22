@@ -14,6 +14,8 @@ struct ChatMessage: Identifiable, Equatable {
     let text: String
     let timestamp: Date
     let isOutgoing: Bool
+    /// `true` once the receiver has acknowledged the message (read receipt).
+    var isRead: Bool = false
 }
 
 /// A contact listed in the chat list and addressed by the controller.
@@ -27,10 +29,6 @@ struct Contact: Identifiable {
 
 /// Wraps one `MessageRouter` + one `AnonTransport` for a single profile (one
 /// "device"), and owns that profile's ephemeral session key.
-///
-/// Every message is sealed end-to-end with `AnonCrypto` before it enters the
-/// router: the router and the mesh transport only ever see a `WireMessage`
-/// whose payload is `senderKey || seal(plaintext)`.
 final class ChatController: ObservableObject {
     @Published var messages: [ChatMessage] = []
 
@@ -38,13 +36,12 @@ final class ChatController: ObservableObject {
     let transportNode: InMemoryTransport
 
     /// When set, inbound text triggers an automatic reply after a short delay.
-    /// The local profile leaves this `nil`; remote contacts use canned replies.
     var autoReply: ((String) -> String)?
 
     /// This profile's ephemeral session. A fresh one is created per
     /// profile/launch; its public key is never a long-term, globally visible
     /// identifier.
-    private let session = EphemeralSession()
+    private var session = EphemeralSession()
 
     private let router: MessageRouter
 
@@ -53,6 +50,9 @@ final class ChatController: ObservableObject {
 
     /// Maps a local `PeerRef` to that contact's ephemeral public key.
     private var publicKeyByPeer: [PeerRef: SessionPublicKey] = [:]
+
+    /// Unread inbound message count per peer.
+    private var unreadByPeer: [PeerRef: Int] = [:]
 
     init(peer: PeerRef) {
         self.peer = peer
@@ -67,24 +67,31 @@ final class ChatController: ObservableObject {
     /// The key this profile advertises to contacts (QR invitation payload).
     var sessionPublicKey: SessionPublicKey { session.publicKey }
 
+    /// Number of unread inbound messages for a peer.
+    func unreadCount(for peer: PeerRef) -> Int {
+        unreadByPeer[peer] ?? 0
+    }
+
+    /// Clear the unread count once the user has viewed the conversation.
+    func markRead(peer: PeerRef) {
+        unreadByPeer[peer] = 0
+    }
+
     /// Complete the X25519 handshake side for a peer's public key.
     func sharedSecret(with peerKey: SessionPublicKey) -> Data? {
         session.sharedSecret(with: peerKey)
     }
 
-    /// Install a contact's ephemeral public key and the derived symmetric
-    /// session key. This is the in-process equivalent of completing an
-    /// invitation handshake; over a real transport the same keys are exchanged
-    /// via a one-time `anon://invite?...` link.
+    /// Install a contact's ephemeral public key and the derived symmetric key.
     func installContactKey(_ key: SymmetricKey, peer ref: PeerRef, publicKey: SessionPublicKey) {
         keysByPeerPublicKey[publicKey] = key
         publicKeyByPeer[ref] = publicKey
     }
 
     /// Insert a local-only incoming message (demo seeding; no wire traffic).
-    func seedIncoming(text: String, from sender: PeerRef) {
+    func seedIncoming(text: String, from sender: PeerRef, id: String = "seed-\(UUID().uuidString)") {
         let message = ChatMessage(
-            id: "seed-\(UUID().uuidString)",
+            id: id,
             sender: sender,
             recipient: nil,
             text: text,
@@ -97,7 +104,6 @@ final class ChatController: ObservableObject {
     func send(text: String, to recipient: PeerRef) {
         let id = MessageID.random()
 
-        // Build the sealed wire payload.
         guard
             let peerKey = publicKeyByPeer[recipient],
             let sessionKey = keysByPeerPublicKey[peerKey],
@@ -113,6 +119,17 @@ final class ChatController: ObservableObject {
         appendOutgoing(id: id, text: text, to: recipient, note: nil)
         let envelope = Envelope(recipientRef: recipient, sealedPayload: payload, messageID: id)
         _ = router.send(envelope, to: recipient)
+    }
+
+    /// Wipe all message content and rotate to a brand-new ephemeral identity.
+    /// No long-term identifier survives a rotation; any established session key
+    /// becomes invalid and must be re-established from a fresh invitation.
+    func rotateIdentity() {
+        messages.removeAll()
+        unreadByPeer.removeAll()
+        session = EphemeralSession()
+        keysByPeerPublicKey.removeAll()
+        publicKeyByPeer.removeAll()
     }
 
     private func appendOutgoing(id: MessageID, text: String, to recipient: PeerRef, note: String?) {
@@ -134,6 +151,7 @@ final class ChatController: ObservableObject {
         guard let text = try? openText(wire.sealed, using: sessionKey) else { return }
 
         let sender = peerRef(for: wire.senderKey) ?? envelope.recipientRef
+        unreadByPeer[sender, default: 0] += 1
         let message = ChatMessage(
             id: envelope.messageID.uuid,
             sender: sender,
@@ -146,6 +164,10 @@ final class ChatController: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.messages.append(message)
+            // Mark any prior outgoing messages to this peer as read.
+            for index in self.messages.indices where self.messages[index].isOutgoing && self.messages[index].recipient == sender {
+                self.messages[index].isRead = true
+            }
             if let autoReply = self.autoReply {
                 let reply = autoReply(text)
                 let delay = Double.random(in: 0.8...1.6)
