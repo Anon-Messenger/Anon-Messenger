@@ -1,0 +1,15 @@
+[submodule "submodules/bitchat"]
+	path = submodules/bitchat
+	url = https://github.com/Anon-Messenger/bitchat.git
+[submodule "submodules/simplexmq"]
+	path = submodules/simplexmq
+	url = https://github.com/Anon-Messenger/simplexmq.git
+[submodule "submodules/simplex-chat"]
+	path = submodules/simplex-chat
+	url = https://github.com/Anon-Messenger/simplex-chat.git
+[submodule "submodules/Telegram-iOS"]
+	path = submodules/Telegram-iOS
+	url = https://github.com/Anon-Messenger/Telegram-iOS.git
+[submodule "submodules/i2pd"]
+	path = submodules/i2pd
+	url = https://github.com/PurpleI2P/i2pd.git

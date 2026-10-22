@@ -1,0 +1,19 @@
+# Build artifacts
+.build/
+/tmp/
+*.o
+*.a
+*.swiftmodule
+*.swiftdoc
+*.swiftsourceinfo
+DerivedData/
+
+# macOS
+.DS_Store
+
+# Swift Package Manager
+Packages/Anon/.build/
+
+# Build outputs (produced under /tmp by Tools/*)
+/anon-app
+/anon-router-smoke
