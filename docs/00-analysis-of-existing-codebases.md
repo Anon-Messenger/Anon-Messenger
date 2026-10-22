@@ -149,8 +149,17 @@ frameworks (e.g. `ChatListUI`, `ChatMessageBackground`, `ItemListUI`, `AsyncDisp
 3. **License.** GPL (copyfree-unfriendly combination with bitchat's Unlicense; adds TDLib).
 
 ### What Anon takes from Telegram-iOS
-- **Design language only:** chat-list layout, message bubble shapes/colors, media presentation,
-  folders, themes, swipe actions, transition feel. A visual spec, not code.
+- **Concrete design tokens (clean-room, factual values only).** Telegram-iOS is ~49% Swift, and
+  the bulk of that is the presentation/UI layer, not core networking. Anon mines it for *facts*
+  — canonical color values and the peer-name palette — and re-expresses them as original code:
+  - `defaultDayAccentColor` → `0x0088ff` accent
+  - chat-list day palette → title `0x000000`, message/preview `0x8e8e93`, free/secondary
+    `0x6d6d72`, pinned-item background `0xf7f7f7`
+  - peer-name color palette (7 canonical hues) from `ManagedPeerColorUpdates.swift`
+  These live in `App/Anon/Sources/TelegramDesignTokens.swift`. Only uncopyrightable factual
+  values are ported; **no Telegram Swift code is copied** (Telegram-iOS is GPL, Anon is AGPL, so
+  the implementation stays clean-room). Layout semantics (chat-list rows, bubble shapes, search
+  pill, composer) are reproduced as an original interpretation, not linked source.
 
 ---
 

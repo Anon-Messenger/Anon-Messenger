@@ -197,11 +197,10 @@ struct AvatarView: View {
     }
 
     private var gradient: LinearGradient {
-        switch contact.id {
-        case "contact-1": return LinearGradient(colors: [.purple, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
-        case "contact-2": return LinearGradient(colors: [.orange, .pink], startPoint: .topLeading, endPoint: .bottomTrailing)
-        default: return LinearGradient(colors: [.teal, .blue], startPoint: .topLeading, endPoint: .bottomTrailing)
-        }
+        // Canonical Telegram peer-name color, deterministic per contact.
+        let base = TelegramDesignTokens.peerColor(for: contact.peer.value)
+        let brighter = base.opacity(0.82)
+        return LinearGradient(colors: [base, brighter], startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 }
 

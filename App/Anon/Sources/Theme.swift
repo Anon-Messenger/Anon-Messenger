@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// Telegram-inspired palette.
+/// Telegram-inspired palette, sourced from factual design tokens in
+/// `TelegramDesignTokens.swift`. Chat background/bubbles stay close to
+/// Telegram's day theme; the accent is the canonical `0x0088ff`.
 enum AnonTheme {
-    /// Sidebar navigation tint (Telegram's classic iOS teal-blue).
+    /// Sidebar navigation tint (Telegram's classic teal-blue).
     static let nav = Color(red: 0.34, green: 0.51, blue: 0.64)
 
     /// Chat area background.
@@ -17,9 +19,9 @@ enum AnonTheme {
     /// Incoming message bubble.
     static let incomingBubble = Color.white
 
-    /// Primary accent used for buttons and highlights.
-    static let accent = Color(red: 0.20, green: 0.53, blue: 0.80)
+    /// Canonical Telegram accent blue (`defaultDayAccentColor`, 0x0088ff).
+    static let accent = TelegramDesignTokens.color(hex: TelegramDesignTokens.accentHex)
 
-    /// Muted text color.
-    static let muted = Color(white: 0.45)
+    /// Muted text color (Telegram's `messageTextColor`, 0x8e8e93).
+    static let muted = TelegramDesignTokens.color(hex: TelegramDesignTokens.ChatList.messageHex)
 }

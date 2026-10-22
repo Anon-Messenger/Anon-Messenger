@@ -44,6 +44,7 @@ build_lib AnonTransports "$PKG/AnonTransports"/*.swift
 # --- Build the app executable
 sc -I "$BUILD_DIR" \
    "$APP/Engine.swift" \
+   "$APP/TelegramDesignTokens.swift" \
    "$APP/Theme.swift" \
    "$APP/AnonApp.swift" \
    "$APP/main.swift" \
