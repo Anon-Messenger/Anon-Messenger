@@ -178,6 +178,123 @@ do {
     check(decoded?.sealed == sealed, "wire message encode/decode roundtrip")
 }
 
+// 14. SessionCipher: directional roundtrip (A→B and B→A)
+do {
+    let a = EphemeralSession()
+    let b = EphemeralSession()
+    let aCipher = SessionCipher(myKey: a.publicKey, peerKey: b.publicKey, sharedSecret: a.sharedSecret(with: b.publicKey)!)
+    let bCipher = SessionCipher(myKey: b.publicKey, peerKey: a.publicKey, sharedSecret: b.sharedSecret(with: a.publicKey)!)
+
+    let fromA = try aCipher.seal(Data("a→b".utf8))
+    check(String(decoding: try bCipher.open(fromA), as: UTF8.self) == "a→b", "session cipher a→b roundtrip")
+
+    let fromB = try bCipher.seal(Data("b→a".utf8))
+    check(String(decoding: try aCipher.open(fromB), as: UTF8.self) == "b→a", "session cipher b→a roundtrip")
+}
+
+// 15. Reflection attack rejected (A's own ciphertext cannot be opened by A).
+do {
+    let a = EphemeralSession()
+    let b = EphemeralSession()
+    let aCipher = SessionCipher(myKey: a.publicKey, peerKey: b.publicKey, sharedSecret: a.sharedSecret(with: b.publicKey)!)
+    let sealed = try aCipher.seal(Data("reflect me".utf8))
+
+    var rejected = false
+    do {
+        _ = try aCipher.open(sealed)
+    } catch {
+        rejected = true
+    }
+    check(rejected, "reflected ciphertext rejected")
+}
+
+// 16. Cross-session / key substitution rejected.
+do {
+    let a = EphemeralSession()
+    let b = EphemeralSession()
+    let c = EphemeralSession()
+    let aCipher = SessionCipher(myKey: a.publicKey, peerKey: b.publicKey, sharedSecret: a.sharedSecret(with: b.publicKey)!)
+    let cCipher = SessionCipher(myKey: c.publicKey, peerKey: b.publicKey, sharedSecret: c.sharedSecret(with: b.publicKey)!)
+    let sealed = try aCipher.seal(Data("cross session".utf8))
+
+    var rejected = false
+    do {
+        _ = try cCipher.open(sealed)
+    } catch {
+        rejected = true
+    }
+    check(rejected, "cross-session ciphertext rejected")
+}
+
+// 17. Already-expired envelope is never accepted or parked.
+do {
+    let router = MessageRouter()
+    let smp = InMemoryTransport(transportID: .smpI2P, priority: .smpI2P, promptDelivery: false)
+    router.register(smp)
+
+    let envelope = Envelope(
+        recipientRef: "peer-a",
+        sealedPayload: Data([1]),
+        messageID: MessageID.random(),
+        ttl: EnvelopeTTL(seconds: 0)
+    )
+    let d = router.send(envelope, to: "peer-a")
+    check(d.chosenTransport == nil && !d.queuedForCourier, "expired envelope not queued")
+    check(router.parkedCount == 0, "expired envelope not parked")
+}
+
+// 18. Parked envelope is dropped once its TTL elapses.
+do {
+    let router = MessageRouter()
+    let smp = InMemoryTransport(transportID: .smpI2P, priority: .smpI2P, promptDelivery: false)
+    router.register(smp)
+
+    let envelope = Envelope(
+        recipientRef: "peer-a",
+        sealedPayload: Data([1]),
+        messageID: MessageID.random(),
+        ttl: EnvelopeTTL(seconds: 1)
+    )
+    router.send(envelope, to: "peer-a")
+    check(router.parkedCount == 1, "parked before ttl expiry")
+
+    Thread.sleep(forTimeInterval: 1.1)
+    router.retryParked()
+    check(router.parkedCount == 0, "parked envelope dropped after ttl expiry")
+    check(smp.sendCount == 0, "expired envelope never dispatched")
+}
+
+// 19. Dedup set is bounded (FIFO eviction).
+do {
+    let router = MessageRouter()
+    let mesh = InMemoryTransport(transportID: .mesh, priority: .mesh)
+    router.register(mesh)
+    router.maxDedupEntries = 3
+
+    let ids = (0..<5).map { MessageID("dedup-\($0)") }
+    for id in ids {
+        _ = router.send(makeEnvelope(id), to: "peer-a")
+    }
+    check(mesh.sendCount == 5, "five unique messages dispatched")
+
+    // The oldest two IDs were evicted; re-sending the oldest dispatches again.
+    _ = router.send(makeEnvelope(ids[0]), to: "peer-a")
+    check(mesh.sendCount == 6, "oldest dedup entry evicted and re-dispatched")
+}
+
+// 20. Outbox is bounded.
+do {
+    let router = MessageRouter()
+    let smp = InMemoryTransport(transportID: .smpI2P, priority: .smpI2P, promptDelivery: false)
+    router.register(smp)
+    router.maxOutboxEntries = 2
+
+    for _ in 0..<5 {
+        _ = router.send(makeEnvelope(), to: "peer-a")
+    }
+    check(router.parkedCount == 2, "outbox bounded to maxOutboxEntries")
+}
+
 if failures == 0 {
     print("ALL SMOKE TESTS PASSED")
 } else {

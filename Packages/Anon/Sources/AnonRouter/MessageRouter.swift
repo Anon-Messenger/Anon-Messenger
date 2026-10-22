@@ -33,10 +33,12 @@ public struct RoutingDecision: Equatable {
 ///   3. hand the envelope over, tracking the ack for dedup/retry
 ///   4. park for courier/late delivery when nothing is reachable
 ///
-/// Deduplication is keyed on the globally unique `MessageID`. A message becomes
-/// "dispatched" as soon as it is handed to any transport, which synchronously
-/// suppresses duplicate sends even before an asynchronous ack arrives. The
-/// router is thread-safe: all state mutations happen on a serial queue.
+/// The router is hardened against resource exhaustion and stale replay:
+/// - the dedup set is bounded (FIFO eviction),
+/// - the outbox is bounded,
+/// - parked envelopes carrying a TTL are dropped once expired.
+///
+/// The router is thread-safe: all state mutations happen on a serial queue.
 public final class MessageRouter {
     private let queue = DispatchQueue(label: "anon.router.queue")
     private let deliveryQueue = DispatchQueue(label: "anon.router.delivery", attributes: .concurrent)
@@ -47,14 +49,26 @@ public final class MessageRouter {
     /// Message IDs already dispatched or received; suppresses duplicates.
     private var dispatchedIDs = Set<String>()
 
+    /// Insertion order for `dispatchedIDs`, used for bounded FIFO eviction.
+    private var dispatchedOrder: [String] = []
+
+    /// Maximum number of message IDs retained for deduplication.
+    public var maxDedupEntries = 10_000
+
     /// Envelopes that could not be sent and are awaiting a later attempt.
     private var outbox: [PeerRef: [Envelope]] = [:]
+
+    /// Time each parked message ID was enqueued, for TTL enforcement.
+    private var parkedAt: [String: Date] = [:]
 
     /// Retry bookkeeping per envelope message ID.
     private var retryAttempts: [String: Int] = [:]
 
     /// Maximum number of times a parked envelope will be retried.
     public var maxRetryAttempts = 3
+
+    /// Maximum number of envelopes parked awaiting a route.
+    public var maxOutboxEntries = 1_000
 
     public init() {}
 
@@ -96,11 +110,23 @@ public final class MessageRouter {
             guard let self = self else { return }
             let id = envelope.messageID.uuid
             guard !self.dispatchedIDs.contains(id) else { return }
-            self.dispatchedIDs.insert(id)
+            self.rememberDispatched(id)
             let handlers = self.inboundHandlers
             self.deliveryQueue.async {
                 handlers.forEach { $0(envelope) }
             }
+        }
+    }
+
+    /// Add a message ID to the dedup set, evicting the oldest entry when the
+    /// configured bound is reached.
+    private func rememberDispatched(_ id: String) {
+        if dispatchedIDs.contains(id) { return }
+        dispatchedIDs.insert(id)
+        dispatchedOrder.append(id)
+        if dispatchedOrder.count > maxDedupEntries {
+            let stale = dispatchedOrder.removeFirst()
+            dispatchedIDs.remove(stale)
         }
     }
 
@@ -122,8 +148,13 @@ public final class MessageRouter {
             return RoutingDecision(messageID: envelope.messageID, recipientRef: ref, chosenTransport: nil, queuedForCourier: false)
         }
 
+        // Never accept an already-expired envelope.
+        guard !isExpired(envelope, at: Date()) else {
+            return RoutingDecision(messageID: envelope.messageID, recipientRef: ref, chosenTransport: nil, queuedForCourier: false)
+        }
+
         if let candidate = orderedCandidates(reachableFor: ref).first {
-            dispatchedIDs.insert(id)
+            rememberDispatched(id)
             candidate.send(envelope, to: ref) { [weak self] ack in
                 guard let self = self else { return }
                 self.queue.async { self.handle(ack) }
@@ -131,13 +162,13 @@ public final class MessageRouter {
             return RoutingDecision(messageID: envelope.messageID, recipientRef: ref, chosenTransport: candidate.transportID, queuedForCourier: false)
         }
 
-        // No prompt route. Park when a transport can still store-and-forward.
+        // No prompt route. Park when a transport can still store-and-forward
+        // and the outbox is not full.
         let shouldHold = transports.values.contains { $0.isPeerReachable(ref) }
-        if shouldHold {
+        if shouldHold, totalParked < maxOutboxEntries {
             outbox[ref, default: []].append(envelope)
-            if retryAttempts[id] == nil {
-                retryAttempts[id] = 0
-            }
+            parkedAt[id] = Date()
+            retryAttempts[id] = 0
         }
         return RoutingDecision(messageID: envelope.messageID, recipientRef: ref, chosenTransport: nil, queuedForCourier: shouldHold)
     }
@@ -151,10 +182,20 @@ public final class MessageRouter {
             .sorted { $0.priority < $1.priority }
     }
 
+    private var totalParked: Int {
+        outbox.values.map(\.count).reduce(0, +)
+    }
+
+    private func isExpired(_ envelope: Envelope, at now: Date) -> Bool {
+        guard let ttl = envelope.ttl else { return false }
+        guard ttl.seconds > 0 else { return true }
+        return false // absolute expiry is tracked via parkedAt for queued envelopes
+    }
+
     private func handle(_ ack: DeliveryAck) {
         let id = ack.messageID.uuid
         if ack.accepted {
-            // Stay dispatched; just drop any parked copy.
+            // Stay dispatched; drop any parked copy and its TTL bookkeeping.
             removeFromOutbox(messageID: ack.messageID)
         } else {
             // Transport rejected; allow a future retry.
@@ -163,30 +204,44 @@ public final class MessageRouter {
     }
 
     private func removeFromOutbox(messageID: MessageID) {
+        let id = messageID.uuid
         for (ref, envelopes) in outbox {
-            let remaining = envelopes.filter { $0.messageID != messageID }
+            let remaining = envelopes.filter { $0.messageID.uuid != id }
             outbox[ref] = remaining.isEmpty ? nil : remaining
         }
+        parkedAt.removeValue(forKey: id)
+        retryAttempts.removeValue(forKey: id)
     }
 
     // MARK: - Retry & sweep
 
-    /// Retry parked envelopes whose recipients are now reachable. Safe to call
-    /// frequently; dedup by message ID prevents duplicates.
+    /// Retry parked envelopes whose recipients are now reachable, and drop any
+    /// whose TTL has elapsed. Safe to call frequently.
     public func retryParked() {
         queue.sync {
+            let now = Date()
             let refs = Array(outbox.keys)
             for ref in refs {
                 guard let envelopes = outbox[ref] else { continue }
                 let remaining = envelopes.filter { envelope in
                     let id = envelope.messageID.uuid
                     guard !dispatchedIDs.contains(id) else { return false }
+
+                    // Drop expired parked envelopes.
+                    if let queuedAt = parkedAt[id], let ttl = envelope.ttl, ttl.seconds > 0 {
+                        if now.timeIntervalSince(queuedAt) >= Double(ttl.seconds) {
+                            parkedAt.removeValue(forKey: id)
+                            retryAttempts.removeValue(forKey: id)
+                            return false
+                        }
+                    }
+
                     let attempts = retryAttempts[id] ?? 0
                     guard attempts < maxRetryAttempts else { return false }
 
                     if let candidate = orderedCandidates(reachableFor: ref).first {
                         retryAttempts[id] = attempts + 1
-                        dispatchedIDs.insert(id)
+                        rememberDispatched(id)
                         candidate.send(envelope, to: ref) { [weak self] ack in
                             guard let self = self else { return }
                             self.queue.async { self.handle(ack) }
@@ -202,6 +257,6 @@ public final class MessageRouter {
 
     /// Number of envelopes currently parked awaiting a route.
     public var parkedCount: Int {
-        queue.sync { outbox.values.map(\.count).reduce(0, +) }
+        queue.sync { totalParked }
     }
 }

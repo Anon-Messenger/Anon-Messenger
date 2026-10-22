@@ -137,6 +137,21 @@ Two nested layers, matching the "double ratchet + additional layer preferred" re
    - SMP-over-I2P: the SMP channel is additionally wrapped in I2P's garlic routing; the content is
      already ratchet-encrypted end-to-end.
 
+### 3.1 Hardened AEAD conventions (implemented in `AnonCrypto`)
+
+The current `SessionCipher` already goes beyond a single shared key, closing two
+classic weaknesses before the full double ratchet lands:
+
+- **Directional keys (reflection resistance).** A→B and B→A keys are derived
+  independently via HKDF over the *ordered* public-key pair, so a ciphertext
+  cannot be reflected back to its sender and still authenticate.
+- **Session binding (key-substitution resistance).** Every AES-GCM tag is bound
+  to the canonical `(PeerA, PeerB)` session identity as associated data, so a
+  valid ciphertext cannot be transplanted into another session.
+- **Replay/expiry.** Envelopes carry a TTL; the router drops already-expired or
+  queued-and-expired envelopes, and both the dedup set and the outbox are
+  bounded to prevent memory exhaustion.
+
 Envelope layout (stored/delivered by the router):
 
 ```

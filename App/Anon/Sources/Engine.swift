@@ -45,8 +45,10 @@ final class ChatController: ObservableObject {
 
     private let router: MessageRouter
 
-    /// Derived symmetric key per contact, indexed by the contact's session key.
-    private var keysByPeerPublicKey: [SessionPublicKey: SymmetricKey] = [:]
+    /// Directional, session-bound cipher per contact, indexed by the contact's
+    /// ephemeral session key. The cipher prevents reflection and key
+    /// substitution (see `SessionCipher`).
+    private var ciphersByPeerPublicKey: [SessionPublicKey: SessionCipher] = [:]
 
     /// Maps a local `PeerRef` to that contact's ephemeral public key.
     private var publicKeyByPeer: [PeerRef: SessionPublicKey] = [:]
@@ -82,9 +84,9 @@ final class ChatController: ObservableObject {
         session.sharedSecret(with: peerKey)
     }
 
-    /// Install a contact's ephemeral public key and the derived symmetric key.
-    func installContactKey(_ key: SymmetricKey, peer ref: PeerRef, publicKey: SessionPublicKey) {
-        keysByPeerPublicKey[publicKey] = key
+    /// Install a contact's ephemeral public key and the derived session cipher.
+    func installContactCipher(_ cipher: SessionCipher, peer ref: PeerRef, publicKey: SessionPublicKey) {
+        ciphersByPeerPublicKey[publicKey] = cipher
         publicKeyByPeer[ref] = publicKey
     }
 
@@ -106,8 +108,8 @@ final class ChatController: ObservableObject {
 
         guard
             let peerKey = publicKeyByPeer[recipient],
-            let sessionKey = keysByPeerPublicKey[peerKey],
-            let sealed = try? sealText(text, using: sessionKey)
+            let cipher = ciphersByPeerPublicKey[peerKey],
+            let sealed = try? cipher.seal(Data(text.utf8))
         else {
             appendOutgoing(id: id, text: text, to: recipient, note: "🔒 no session")
             return
@@ -128,7 +130,7 @@ final class ChatController: ObservableObject {
         messages.removeAll()
         unreadByPeer.removeAll()
         session = EphemeralSession()
-        keysByPeerPublicKey.removeAll()
+        ciphersByPeerPublicKey.removeAll()
         publicKeyByPeer.removeAll()
     }
 
@@ -147,8 +149,9 @@ final class ChatController: ObservableObject {
 
     private func handleReceive(_ envelope: Envelope) {
         guard let wire = WireMessage.decode(envelope.sealedPayload) else { return }
-        guard let sessionKey = keysByPeerPublicKey[wire.senderKey] else { return }
-        guard let text = try? openText(wire.sealed, using: sessionKey) else { return }
+        guard let cipher = ciphersByPeerPublicKey[wire.senderKey] else { return }
+        guard let textData = try? cipher.open(wire.sealed) else { return }
+        let text = String(decoding: textData, as: UTF8.self)
 
         let sender = peerRef(for: wire.senderKey) ?? envelope.recipientRef
         unreadByPeer[sender, default: 0] += 1
@@ -196,8 +199,10 @@ func establishContactKey(
         let bSecret = b.sharedSecret(with: a.sessionPublicKey)
     else { return }
 
-    a.installContactKey(deriveSessionKey(from: aSecret), peer: refB, publicKey: b.sessionPublicKey)
-    b.installContactKey(deriveSessionKey(from: bSecret), peer: refA, publicKey: a.sessionPublicKey)
+    let aCipher = SessionCipher(myKey: a.sessionPublicKey, peerKey: b.sessionPublicKey, sharedSecret: aSecret)
+    let bCipher = SessionCipher(myKey: b.sessionPublicKey, peerKey: a.sessionPublicKey, sharedSecret: bSecret)
+    a.installContactCipher(aCipher, peer: refB, publicKey: b.sessionPublicKey)
+    b.installContactCipher(bCipher, peer: refA, publicKey: a.sessionPublicKey)
 }
 
 /// Bridges in-memory mesh transports so an envelope sent by one node is

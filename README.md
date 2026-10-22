@@ -46,7 +46,7 @@ submodules/i2pd           https://github.com/PurpleI2P/i2pd.git              (em
 
 ```sh
 make build       # builds the M0 libs + a real /tmp/Anon.app bundle
-make test        # runs 22 router + E2EE checks (all pass)
+make test        # runs 34 router + E2EE + hardening checks (all pass)
 make run         # builds + launches the Anon app
 make clean       # removes artifacts
 make bootstrap   # init the submodules

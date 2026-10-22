@@ -23,14 +23,20 @@ public func deriveSessionKey(from sharedSecret: Data, salt: Data = Data(), info:
 /// Seal a plaintext `Data` payload into an AEAD envelope with a random nonce.
 /// The result is `nonce || ciphertext || tag`, suitable for opaque storage in
 /// the router's `Envelope.sealedPayload`.
-public func sealMessage(_ plaintext: Data, using key: SymmetricKey) throws -> Data {
+///
+/// `authenticating` is AES-GCM associated data: it is bound into the
+/// authentication tag but not encrypted. Binding the session context here
+/// prevents an attacker from replaying or transplanting a valid ciphertext
+/// into a different session (key-substitution / reflection attacks).
+public func sealMessage(_ plaintext: Data, using key: SymmetricKey, authenticating aad: Data = Data()) throws -> Data {
     let nonce = AES.GCM.Nonce()
-    let box = try AES.GCM.seal(plaintext, using: key, nonce: nonce)
+    let box = try AES.GCM.seal(plaintext, using: key, nonce: nonce, authenticating: aad)
     return nonce.withUnsafeBytes { Data($0) } + box.ciphertext + box.tag
 }
 
 /// Open an AEAD envelope previously produced by `sealMessage`.
-public func openMessage(_ sealed: Data, using key: SymmetricKey) throws -> Data {
+/// The supplied associated data must match exactly or opening fails.
+public func openMessage(_ sealed: Data, using key: SymmetricKey, authenticating aad: Data = Data()) throws -> Data {
     // nonce (12) + ciphertext + tag (16)
     guard sealed.count > 28 else { throw AnonCryptoError.invalidPayload }
     let nonceData = sealed.prefix(12)
@@ -39,14 +45,14 @@ public func openMessage(_ sealed: Data, using key: SymmetricKey) throws -> Data 
 
     guard let nonce = try? AES.GCM.Nonce(data: nonceData) else { throw AnonCryptoError.invalidPayload }
     let box = try AES.GCM.SealedBox(nonce: nonce, ciphertext: ciphertext, tag: tagData)
-    return try AES.GCM.open(box, using: key)
+    return try AES.GCM.open(box, using: key, authenticating: aad)
 }
 
 /// Convenience wrappers for String payloads.
-public func sealText(_ text: String, using key: SymmetricKey) throws -> Data {
-    try sealMessage(Data(text.utf8), using: key)
+public func sealText(_ text: String, using key: SymmetricKey, authenticating aad: Data = Data()) throws -> Data {
+    try sealMessage(Data(text.utf8), using: key, authenticating: aad)
 }
 
-public func openText(_ sealed: Data, using key: SymmetricKey) throws -> String {
-    String(decoding: try openMessage(sealed, using: key), as: UTF8.self)
+public func openText(_ sealed: Data, using key: SymmetricKey, authenticating aad: Data = Data()) throws -> String {
+    String(decoding: try openMessage(sealed, using: key, authenticating: aad), as: UTF8.self)
 }
