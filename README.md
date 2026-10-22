@@ -15,10 +15,12 @@ by default** (with optional Tor fallback for usability).
 
 > **Status:** Architecture phase **plus the M0 foundation**. The technical
 > architecture, codebase analysis, milestones, setup, and roadmap are in `docs/`.
-> The upstream forks are wired in as git submodules, and a compiling M0 Swift
-> skeleton (identity/envelope types, the frozen `AnonTransport` /
-> `AnonymousRouter` interfaces, and a tested multi-transport `MessageRouter`) is
-> in `Packages/Anon/`.
+> The upstream forks are wired in as git submodules. `Packages/Anon/` contains
+> the M0 layers — identity/envelope types, a real E2EE crypto layer
+> (`AnonCrypto`: X25519 + HKDF + AES-GCM + one-time invitations), the frozen
+> `AnonTransport` / `AnonymousRouter` interfaces, and a tested multi-transport
+> `MessageRouter`. `App/` is a runnable Telegram-inspired macOS shell wired to
+> the router, with messages sealed end-to-end before they cross the mesh.
 
 ## Document map
 
@@ -40,17 +42,21 @@ submodules/Telegram-iOS   https://github.com/Anon-Messenger/Telegram-iOS.git (UI
 submodules/i2pd           https://github.com/PurpleI2P/i2pd.git              (embedded I2P router, BSD-3)
 ```
 
-## Building the M0 foundation
-
-The M0 packages are Foundation-only, so they build under Command Line Tools
-(no full Xcode.app required on this machine):
+## Building and running
 
 ```sh
-./Tools/build-smoke.sh      # emits 4 static libs + a smoke-test binary
-/tmp/anon-router-smoke      # runs the router behavior checks (14 PASS lines)
+make build       # builds the M0 libs + a real /tmp/Anon.app bundle
+make test        # runs 22 router + E2EE checks (all pass)
+make run         # builds + launches the Anon app
+make clean       # removes artifacts
+make bootstrap   # init the submodules
 ```
 
-With a full Xcode installation, the same packages build the standard way:
+The M0 packages are self-contained (AppKit/SwiftUI/CryptoKit only), so they
+build under Command Line Tools or a full Xcode install; the scripts auto-detect
+the macOS SDK.
+
+With a full Xcode installation, the SwiftPM targets also build the standard way:
 
 ```sh
 cd Packages/Anon && swift build && swift test

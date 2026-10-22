@@ -21,7 +21,7 @@ test:
 	/tmp/anon-router-smoke
 
 run: build
-	open /tmp/anon-app
+	open /tmp/Anon.app
 
 clean:
-	rm -rf /tmp/anon-build /tmp/anon-app /tmp/anon-router-smoke
+	rm -rf /tmp/anon-build /tmp/Anon.app /tmp/anon-router-smoke

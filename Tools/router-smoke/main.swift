@@ -2,6 +2,8 @@ import Foundation
 import AnonCore
 import AnonRouter
 import AnonTransports
+import AnonCrypto
+import CryptoKit
 
 // Plain assertion harness. XCTest is unavailable under Command Line Tools,
 // so MessageRouter behavior is verified here with `swiftc` instead of `swift test`.
@@ -121,6 +123,59 @@ do {
     // inbound handler is async on the router queue; give it a moment
     Thread.sleep(forTimeInterval: 0.2)
     check(received.value == 1, "inbound deduplicated")
+}
+
+// 9. X25519 key agreement derives the same secret on both sides
+do {
+    let a = EphemeralSession()
+    let b = EphemeralSession()
+    let aSecret = a.sharedSecret(with: b.publicKey)
+    let bSecret = b.sharedSecret(with: a.publicKey)
+    check(aSecret == bSecret, "x25519 shared secret matches on both sides")
+    check(aSecret != nil, "x25519 secret derived")
+}
+
+// 10. seal/open roundtrip
+do {
+    let key = SymmetricKey(size: .bits256)
+    let sealed = try sealText("hello anon", using: key)
+    let opened = try openText(sealed, using: key)
+    check(opened == "hello anon", "seal/open roundtrip")
+    check(sealed != Data("hello anon".utf8), "ciphertext differs from plaintext")
+}
+
+// 11. tampered payload is rejected (AEAD tag fails)
+do {
+    let key = SymmetricKey(size: .bits256)
+    let sealed = try sealText("tamper me", using: key)
+    var flipped = sealed
+    flipped[flipped.index(flipped.endIndex, offsetBy: -1)] ^= 0xFF
+    var rejected = false
+    do {
+        _ = try openMessage(flipped, using: key)
+    } catch {
+        rejected = true
+    }
+    check(rejected, "tampered ciphertext rejected")
+}
+
+// 12. invitation link roundtrip
+do {
+    let session = EphemeralSession()
+    let invite = AnonInvitation(displayName: "Nova", sessionKey: session.publicKey)
+    let parsed = AnonInvitation(link: invite.link)
+    check(parsed == invite, "invitation link roundtrip")
+    check(invite.link.hasPrefix("anon://invite?") , "invitation link scheme")
+}
+
+// 13. wire message encode/decode roundtrip
+do {
+    let key = SymmetricKey(size: .bits256)
+    let sealed = try sealText("wire", using: key)
+    let sender = EphemeralSession()
+    let wire = WireMessage(senderKey: sender.publicKey, sealed: sealed)
+    let decoded = try WireMessage.decode(wire.encoded())
+    check(decoded?.sealed == sealed, "wire message encode/decode roundtrip")
 }
 
 if failures == 0 {

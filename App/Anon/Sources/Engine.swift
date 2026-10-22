@@ -1,12 +1,12 @@
 import AnonCore
 import AnonRouter
 import AnonTransports
+import AnonCrypto
 import Combine
+import CryptoKit
 import Foundation
 
-/// A UI-level chat message. For the M0 app shell the payload is plain text;
-/// the real controller seals content with double-ratchet ciphertext — the
-/// router only ever sees the opaque bytes in `Envelope`.
+/// A UI-level chat message.
 struct ChatMessage: Identifiable, Equatable {
     let id: String
     let sender: PeerRef
@@ -26,8 +26,11 @@ struct Contact: Identifiable {
 }
 
 /// Wraps one `MessageRouter` + one `AnonTransport` for a single profile (one
-/// "device"). The app shell runs two instances — the local profile and
-/// simulated remote contacts — bridged over a simulated mesh.
+/// "device"), and owns that profile's ephemeral session key.
+///
+/// Every message is sealed end-to-end with `AnonCrypto` before it enters the
+/// router: the router and the mesh transport only ever see a `WireMessage`
+/// whose payload is `senderKey || seal(plaintext)`.
 final class ChatController: ObservableObject {
     @Published var messages: [ChatMessage] = []
 
@@ -35,11 +38,21 @@ final class ChatController: ObservableObject {
     let transportNode: InMemoryTransport
 
     /// When set, inbound text triggers an automatic reply after a short delay.
-    /// The local profile leaves this `nil`; remote contacts use a canned reply
-    /// so the end-to-end path is demonstrable.
+    /// The local profile leaves this `nil`; remote contacts use canned replies.
     var autoReply: ((String) -> String)?
 
+    /// This profile's ephemeral session. A fresh one is created per
+    /// profile/launch; its public key is never a long-term, globally visible
+    /// identifier.
+    private let session = EphemeralSession()
+
     private let router: MessageRouter
+
+    /// Derived symmetric key per contact, indexed by the contact's session key.
+    private var keysByPeerPublicKey: [SessionPublicKey: SymmetricKey] = [:]
+
+    /// Maps a local `PeerRef` to that contact's ephemeral public key.
+    private var publicKeyByPeer: [PeerRef: SessionPublicKey] = [:]
 
     init(peer: PeerRef) {
         self.peer = peer
@@ -49,6 +62,23 @@ final class ChatController: ObservableObject {
         self.router.onReceive { [weak self] envelope in
             self?.handleReceive(envelope)
         }
+    }
+
+    /// The key this profile advertises to contacts (QR invitation payload).
+    var sessionPublicKey: SessionPublicKey { session.publicKey }
+
+    /// Complete the X25519 handshake side for a peer's public key.
+    func sharedSecret(with peerKey: SessionPublicKey) -> Data? {
+        session.sharedSecret(with: peerKey)
+    }
+
+    /// Install a contact's ephemeral public key and the derived symmetric
+    /// session key. This is the in-process equivalent of completing an
+    /// invitation handshake; over a real transport the same keys are exchanged
+    /// via a one-time `anon://invite?...` link.
+    func installContactKey(_ key: SymmetricKey, peer ref: PeerRef, publicKey: SessionPublicKey) {
+        keysByPeerPublicKey[publicKey] = key
+        publicKeyByPeer[ref] = publicKey
     }
 
     /// Insert a local-only incoming message (demo seeding; no wire traffic).
@@ -66,29 +96,44 @@ final class ChatController: ObservableObject {
 
     func send(text: String, to recipient: PeerRef) {
         let id = MessageID.random()
-        let message = ChatMessage(
-            id: id.uuid,
-            sender: peer,
-            recipient: recipient,
-            text: text,
-            timestamp: Date(),
-            isOutgoing: true
-        )
-        messages.append(message)
 
-        // Plain demo payload: "text|sender". The router never inspects these
-        // bytes; the real controller substitutes ratchet ciphertext here.
-        let payload = (text + "|" + peer.value).data(using: .utf8) ?? Data()
+        // Build the sealed wire payload.
+        guard
+            let peerKey = publicKeyByPeer[recipient],
+            let sessionKey = keysByPeerPublicKey[peerKey],
+            let sealed = try? sealText(text, using: sessionKey)
+        else {
+            appendOutgoing(id: id, text: text, to: recipient, note: "🔒 no session")
+            return
+        }
+
+        let wire = WireMessage(senderKey: session.publicKey, sealed: sealed)
+        guard let payload = try? wire.encoded() else { return }
+
+        appendOutgoing(id: id, text: text, to: recipient, note: nil)
         let envelope = Envelope(recipientRef: recipient, sealedPayload: payload, messageID: id)
         _ = router.send(envelope, to: recipient)
     }
 
-    private func handleReceive(_ envelope: Envelope) {
-        guard let raw = String(data: envelope.sealedPayload, encoding: .utf8) else { return }
-        let parts = raw.components(separatedBy: "|")
-        let text = parts.first ?? ""
-        let sender = PeerRef(parts.count > 1 ? parts[1] : envelope.recipientRef.value)
+    private func appendOutgoing(id: MessageID, text: String, to recipient: PeerRef, note: String?) {
+        let finalText = note.map { "\(text) \($0)" } ?? text
+        let message = ChatMessage(
+            id: id.uuid,
+            sender: peer,
+            recipient: recipient,
+            text: finalText,
+            timestamp: Date(),
+            isOutgoing: true
+        )
+        messages.append(message)
+    }
 
+    private func handleReceive(_ envelope: Envelope) {
+        guard let wire = WireMessage.decode(envelope.sealedPayload) else { return }
+        guard let sessionKey = keysByPeerPublicKey[wire.senderKey] else { return }
+        guard let text = try? openText(wire.sealed, using: sessionKey) else { return }
+
+        let sender = peerRef(for: wire.senderKey) ?? envelope.recipientRef
         let message = ChatMessage(
             id: envelope.messageID.uuid,
             sender: sender,
@@ -110,6 +155,27 @@ final class ChatController: ObservableObject {
             }
         }
     }
+
+    private func peerRef(for key: SessionPublicKey) -> PeerRef? {
+        publicKeyByPeer.first { $0.value == key }?.key
+    }
+}
+
+/// Complete the ephemeral key agreement between two controllers and install the
+/// derived session keys on both sides.
+func establishContactKey(
+    between a: ChatController,
+    peerA refA: PeerRef,
+    and b: ChatController,
+    peerB refB: PeerRef
+) {
+    guard
+        let aSecret = a.sharedSecret(with: b.sessionPublicKey),
+        let bSecret = b.sharedSecret(with: a.sessionPublicKey)
+    else { return }
+
+    a.installContactKey(deriveSessionKey(from: aSecret), peer: refB, publicKey: b.sessionPublicKey)
+    b.installContactKey(deriveSessionKey(from: bSecret), peer: refA, publicKey: a.sessionPublicKey)
 }
 
 /// Bridges in-memory mesh transports so an envelope sent by one node is

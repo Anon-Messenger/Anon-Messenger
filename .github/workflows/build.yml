@@ -1,0 +1,23 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode (for Swift toolchain)
+        run: sudo xcode-select -s /Applications/Xcode_14.3.app || true
+
+      - name: Build the M0 packages + app
+        run: make build
+
+      - name: Run router + E2EE smoke tests
+        run: make test
