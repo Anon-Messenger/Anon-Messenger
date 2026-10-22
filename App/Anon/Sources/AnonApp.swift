@@ -2,6 +2,36 @@ import SwiftUI
 import AppKit
 import AnonCore
 
+/// The Anon logo loaded from the app bundle. Falls back to a paperplane glyph
+/// when the resource isn't present (e.g. running the bare binary).
+struct AnonLogoView: View {
+    var size: CGFloat = 84
+
+    private var logoImage: NSImage? {
+        guard let path = Bundle.main.path(forResource: "anon", ofType: "png") else { return nil }
+        return NSImage(contentsOfFile: path)
+    }
+
+    var body: some View {
+        Group {
+            if let logoImage = logoImage {
+                Image(nsImage: logoImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+            } else {
+                ZStack {
+                    Circle().fill(AnonTheme.nav).frame(width: size, height: size)
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: size * 0.42))
+                        .foregroundColor(.white)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Formatting helpers
 
 func formatHM(_ date: Date) -> String {
@@ -233,14 +263,7 @@ struct OnboardingView: View {
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
-            ZStack {
-                Circle()
-                    .fill(AnonTheme.nav)
-                    .frame(width: 84, height: 84)
-                Image(systemName: "paperplane.fill")
-                    .font(.system(size: 36))
-                    .foregroundColor(.white)
-            }
+            AnonLogoView(size: 84)
 
             Text("Anon")
                 .font(.system(size: 38, weight: .bold))
@@ -467,8 +490,9 @@ struct AnonApp: View {
 
     private var sidebar: some View {
         VStack(spacing: 0) {
-            // Header: "Anon" + New Message + Menu
-            HStack {
+            // Header: logo + "Anon" + Menu
+            HStack(spacing: 6) {
+                AnonLogoView(size: 26)
                 Text("Anon")
                     .font(.system(size: 22, weight: .bold))
                 Spacer()
