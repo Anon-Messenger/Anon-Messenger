@@ -9,15 +9,14 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
+      # The Anon build is self-contained (Packages/Anon + App/Anon); it does
+      # not need the reference forks. Do NOT fetch submodules: Telegram-iOS's
+      # nested submodules reference repos that no longer exist under the
+      # Anon-Messenger org, which makes recursive init fail before any build.
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Select Xcode (for Swift toolchain)
-        run: sudo xcode-select -s /Applications/Xcode_14.3.app || true
 
       - name: Build the M0 packages + app
         run: make build
 
-      - name: Run router + E2EE smoke tests
+      - name: Run router + E2EE + hardening smoke tests
         run: make test
